@@ -191,7 +191,8 @@ def user_subscription(
             config_format="clash-meta",
             as_base64=False,
             reverse=False,
-            revoked=is_revoked or is_expired,
+            revoked=is_revoked,
+            expired=is_expired,
             device_limited=device_limited,
             unsupported_client=unsupported_client
         )
@@ -203,7 +204,8 @@ def user_subscription(
             config_format="clash",
             as_base64=False,
             reverse=False,
-            revoked=is_revoked or is_expired,
+            revoked=is_revoked,
+            expired=is_expired,
             device_limited=device_limited,
             unsupported_client=unsupported_client
         )
@@ -215,7 +217,8 @@ def user_subscription(
             config_format="sing-box",
             as_base64=False,
             reverse=False,
-            revoked=is_revoked or is_expired,
+            revoked=is_revoked,
+            expired=is_expired,
             device_limited=device_limited,
             unsupported_client=unsupported_client
         )
@@ -227,7 +230,8 @@ def user_subscription(
             config_format="outline",
             as_base64=False,
             reverse=False,
-            revoked=is_revoked or is_expired,
+            revoked=is_revoked,
+            expired=is_expired,
             device_limited=device_limited,
             unsupported_client=unsupported_client
         )
@@ -241,7 +245,8 @@ def user_subscription(
                 config_format="v2ray-json",
                 as_base64=False,
                 reverse=False,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited,
                 unsupported_client=unsupported_client
             )
@@ -252,7 +257,8 @@ def user_subscription(
                 config_format="v2ray",
                 as_base64=True,
                 reverse=False,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited,
                 unsupported_client=unsupported_client
             )
@@ -266,7 +272,8 @@ def user_subscription(
                 config_format="v2ray-json",
                 as_base64=False,
                 reverse=False,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited,
                 unsupported_client=unsupported_client
             )
@@ -277,7 +284,8 @@ def user_subscription(
                 config_format="v2ray-json",
                 as_base64=False,
                 reverse=True,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited,
                 unsupported_client=unsupported_client
             )
@@ -288,7 +296,8 @@ def user_subscription(
                 config_format="v2ray",
                 as_base64=True,
                 reverse=False,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited,
                 unsupported_client=unsupported_client
             )
@@ -301,7 +310,8 @@ def user_subscription(
                 config_format="v2ray-json",
                 as_base64=False,
                 reverse=False,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited,
                 unsupported_client=unsupported_client
             )
@@ -312,7 +322,8 @@ def user_subscription(
                 config_format="v2ray",
                 as_base64=True,
                 reverse=False,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited,
                 unsupported_client=unsupported_client
             )
@@ -326,7 +337,8 @@ def user_subscription(
                 config_format="v2ray-json",
                 as_base64=False,
                 reverse=False,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited,
                 unsupported_client=unsupported_client
             )
@@ -337,7 +349,8 @@ def user_subscription(
                 config_format="v2ray",
                 as_base64=True,
                 reverse=False,
-                revoked=is_revoked or is_expired,
+                revoked=is_revoked,
+            expired=is_expired,
                 device_limited=device_limited
             )
             return Response(content=conf, media_type="text/plain", headers=response_headers)
@@ -350,7 +363,8 @@ def user_subscription(
             config_format="v2ray",
             as_base64=True,
             reverse=False,
-            revoked=is_revoked or is_expired,
+            revoked=is_revoked,
+            expired=is_expired,
             device_limited=device_limited,
             unsupported_client=unsupported_client
         )
@@ -439,7 +453,8 @@ def user_subscription_with_client_type(
                                  config_format=config["config_format"],
                                  as_base64=config["as_base64"],
                                  reverse=config["reverse"],
-                                 revoked=is_revoked or is_expired,
+                                 revoked=is_revoked,
+                                 expired=is_expired,
                                  device_limited=device_limited,
                                  unsupported_client=unsupported_client)
 
