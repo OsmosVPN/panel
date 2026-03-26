@@ -18,6 +18,7 @@ from config import (
     BOT_URL,
     SUB_CLIENT_NOTE,
     SUB_PROFILE_TITLE,
+    SUB_PROFILE_URL,
     SUB_SUPPORT_URL,
     SUB_UPDATE_INTERVAL,
     SUBSCRIPTION_PAGE_TEMPLATE,
@@ -43,18 +44,21 @@ router = APIRouter(tags=['Subscription'], prefix=f'/{XRAY_SUBSCRIPTION_PATH}')
 
 
 def get_user_note(user: UserResponse) -> str:
-    """Return note from marzban env CLIENT_NOTE with <days_left> placeholder support."""
+    """Return note from SUB_CLIENT_NOTE with <days_left> and <tg_id> placeholders."""
     note_template = SUB_CLIENT_NOTE
     if not note_template:
         return ""
+    if "_" in user.username:
+        note_template = note_template.replace("<tg_id>", user.username.split("_", 1)[0])
     expire_ts = int(user.expire or 0)
     if expire_ts <= 0:
         return note_template.replace("<days_left>", "0")
     now_ts = int(datetime.now(timezone.utc).timestamp())
     seconds_left = max(0, expire_ts - now_ts)
     days_left = math.ceil(seconds_left / 86400)
-    note_template = note_template.replace("<days_left>", str(days_left))
-    return note_template
+    return note_template.replace("<days_left>", str(days_left))
+
+
 def resolve_subscription_context(token: str, db: Session):
     """
     Returns tuple: (dbuser or None, is_revoked: bool, created_at)
@@ -157,7 +161,8 @@ def user_subscription(
             db, dbuser, x_hwid, x_device_os, x_ver_os, x_device_model, user_agent
         )
         device_limited = (not registered and not unsupported_client) or crud.is_device_limit_exceeded(db, dbuser)
-    if is_revoked or is_expired or device_limited or unsupported_client:
+    unsupported_blocks = unsupported_client and bool(dbuser.device_limit)
+    if is_revoked or is_expired or device_limited or unsupported_blocks:
         user = get_empty_subscription_user(user)
 
     if not is_revoked and not is_expired:
@@ -169,13 +174,13 @@ def user_subscription(
         announce_text = f"Подписка истекла. Продлите подписку в боте. {BOT_URL}"
     elif device_limited:
         announce_text = f"Достигнут лимит устройств. Удалите старое устройство или увеличьте лимит в боте. {BOT_URL}"
-    elif unsupported_client:
+    elif unsupported_blocks:
         announce_text = f"Это приложение не поддерживается. Установите другое."
     support_url = dbuser.sub_support_url or SUB_SUPPORT_URL
     profile_title = dbuser.sub_profile_title or SUB_PROFILE_TITLE
     response_headers = {
         "content-disposition": build_content_disposition(user.username),
-        "profile-web-page-url": str(request.url),
+        "profile-web-page-url": SUB_PROFILE_URL or str(request.url),
         "support-url": support_url,
         "profile-title": encode_title(profile_title),
         "announce": encode_title(announce_text),
@@ -196,7 +201,7 @@ def user_subscription(
             revoked=is_revoked,
             expired=is_expired,
             device_limited=device_limited,
-            unsupported_client=unsupported_client
+            unsupported_client=unsupported_blocks
         )
         return Response(content=conf, media_type="text/yaml", headers=response_headers)
 
@@ -209,7 +214,7 @@ def user_subscription(
             revoked=is_revoked,
             expired=is_expired,
             device_limited=device_limited,
-            unsupported_client=unsupported_client
+            unsupported_client=unsupported_blocks
         )
         return Response(content=conf, media_type="text/yaml", headers=response_headers)
 
@@ -222,7 +227,7 @@ def user_subscription(
             revoked=is_revoked,
             expired=is_expired,
             device_limited=device_limited,
-            unsupported_client=unsupported_client
+            unsupported_client=unsupported_blocks
         )
         return Response(content=conf, media_type="application/json", headers=response_headers)
 
@@ -235,7 +240,7 @@ def user_subscription(
             revoked=is_revoked,
             expired=is_expired,
             device_limited=device_limited,
-            unsupported_client=unsupported_client
+            unsupported_client=unsupported_blocks
         )
         return Response(content=conf, media_type="application/json", headers=response_headers)
 
@@ -250,7 +255,7 @@ def user_subscription(
                 revoked=is_revoked,
             expired=is_expired,
                 device_limited=device_limited,
-                unsupported_client=unsupported_client
+                unsupported_client=unsupported_blocks
             )
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
@@ -262,7 +267,7 @@ def user_subscription(
                 revoked=is_revoked,
             expired=is_expired,
                 device_limited=device_limited,
-                unsupported_client=unsupported_client
+                unsupported_client=unsupported_blocks
             )
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
@@ -277,7 +282,7 @@ def user_subscription(
                 revoked=is_revoked,
             expired=is_expired,
                 device_limited=device_limited,
-                unsupported_client=unsupported_client
+                unsupported_client=unsupported_blocks
             )
             return Response(content=conf, media_type="application/json", headers=response_headers)
         elif LooseVersion(version_str) >= LooseVersion("1.8.18"):
@@ -289,7 +294,7 @@ def user_subscription(
                 revoked=is_revoked,
             expired=is_expired,
                 device_limited=device_limited,
-                unsupported_client=unsupported_client
+                unsupported_client=unsupported_blocks
             )
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
@@ -301,7 +306,7 @@ def user_subscription(
                 revoked=is_revoked,
             expired=is_expired,
                 device_limited=device_limited,
-                unsupported_client=unsupported_client
+                unsupported_client=unsupported_blocks
             )
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
@@ -315,7 +320,7 @@ def user_subscription(
                 revoked=is_revoked,
             expired=is_expired,
                 device_limited=device_limited,
-                unsupported_client=unsupported_client
+                unsupported_client=unsupported_blocks
             )
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
@@ -327,7 +332,7 @@ def user_subscription(
                 revoked=is_revoked,
             expired=is_expired,
                 device_limited=device_limited,
-                unsupported_client=unsupported_client
+                unsupported_client=unsupported_blocks
             )
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
@@ -342,7 +347,7 @@ def user_subscription(
                 revoked=is_revoked,
             expired=is_expired,
                 device_limited=device_limited,
-                unsupported_client=unsupported_client
+                unsupported_client=unsupported_blocks
             )
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
@@ -368,7 +373,7 @@ def user_subscription(
             revoked=is_revoked,
             expired=is_expired,
             device_limited=device_limited,
-            unsupported_client=unsupported_client
+            unsupported_client=unsupported_blocks
         )
         return Response(content=conf, media_type="text/plain", headers=response_headers)
 
@@ -424,7 +429,8 @@ def user_subscription_with_client_type(
             db, dbuser, x_hwid, x_device_os, x_ver_os, x_device_model, user_agent
         )
         device_limited = (not registered and not unsupported_client) or crud.is_device_limit_exceeded(db, dbuser)
-    if is_revoked or is_expired or device_limited or unsupported_client:
+    unsupported_blocks = unsupported_client and bool(dbuser.device_limit)
+    if is_revoked or is_expired or device_limited or unsupported_blocks:
         user = get_empty_subscription_user(user)
 
     announce_text = get_user_note(user) or ""
@@ -434,13 +440,13 @@ def user_subscription_with_client_type(
         announce_text = f"Подписка истекла. Продлите подписку в боте. {BOT_URL}"
     elif device_limited:
         announce_text = f"Достигнут лимит устройств. Удалите старое устройство или увеличьте лимит в боте. {BOT_URL}"
-    elif unsupported_client:
+    elif unsupported_blocks:
         announce_text = f"Это приложение не поддерживается. Установите другое."
     support_url = dbuser.sub_support_url or SUB_SUPPORT_URL
     profile_title = dbuser.sub_profile_title or SUB_PROFILE_TITLE
     response_headers = {
         "content-disposition": build_content_disposition(user.username),
-        "profile-web-page-url": str(request.url),
+        "profile-web-page-url": SUB_PROFILE_URL or str(request.url),
         "support-url": support_url,
         "profile-title": encode_title(profile_title),
         "announce": encode_title(announce_text),
@@ -460,6 +466,6 @@ def user_subscription_with_client_type(
                                  revoked=is_revoked,
                                  expired=is_expired,
                                  device_limited=device_limited,
-                                 unsupported_client=unsupported_client)
+                                 unsupported_client=unsupported_blocks)
 
     return Response(content=conf, media_type=config["media_type"], headers=response_headers)
