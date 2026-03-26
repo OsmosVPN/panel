@@ -18,6 +18,7 @@ from config import (
     BOT_URL,
     SUB_CLIENT_NOTE,
     SUB_PROFILE_TITLE,
+    SUB_PROFILE_URL,
     SUB_SUPPORT_URL,
     SUB_UPDATE_INTERVAL,
     SUBSCRIPTION_PAGE_TEMPLATE,
@@ -43,18 +44,21 @@ router = APIRouter(tags=['Subscription'], prefix=f'/{XRAY_SUBSCRIPTION_PATH}')
 
 
 def get_user_note(user: UserResponse) -> str:
-    """Return note from marzban env CLIENT_NOTE with <days_left> placeholder support."""
+    """Return note from SUB_CLIENT_NOTE with <days_left> and <tg_id> placeholders."""
     note_template = SUB_CLIENT_NOTE
     if not note_template:
         return ""
+    if "_" in user.username:
+        note_template = note_template.replace("<tg_id>", user.username.split("_", 1)[0])
     expire_ts = int(user.expire or 0)
     if expire_ts <= 0:
         return note_template.replace("<days_left>", "0")
     now_ts = int(datetime.now(timezone.utc).timestamp())
     seconds_left = max(0, expire_ts - now_ts)
     days_left = math.ceil(seconds_left / 86400)
-    note_template = note_template.replace("<days_left>", str(days_left))
-    return note_template
+    return note_template.replace("<days_left>", str(days_left))
+
+
 def resolve_subscription_context(token: str, db: Session):
     """
     Returns tuple: (dbuser or None, is_revoked: bool, created_at)
@@ -175,7 +179,7 @@ def user_subscription(
     profile_title = dbuser.sub_profile_title or SUB_PROFILE_TITLE
     response_headers = {
         "content-disposition": build_content_disposition(user.username),
-        "profile-web-page-url": str(request.url),
+        "profile-web-page-url": SUB_PROFILE_URL or str(request.url),
         "support-url": support_url,
         "profile-title": encode_title(profile_title),
         "announce": encode_title(announce_text),
@@ -440,7 +444,7 @@ def user_subscription_with_client_type(
     profile_title = dbuser.sub_profile_title or SUB_PROFILE_TITLE
     response_headers = {
         "content-disposition": build_content_disposition(user.username),
-        "profile-web-page-url": str(request.url),
+        "profile-web-page-url": SUB_PROFILE_URL or str(request.url),
         "support-url": support_url,
         "profile-title": encode_title(profile_title),
         "announce": encode_title(announce_text),

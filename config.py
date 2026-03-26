@@ -136,6 +136,7 @@ SUB_UPDATE_INTERVAL = config("SUB_UPDATE_INTERVAL", default="12")
 SUB_SUPPORT_URL = config("SUB_SUPPORT_URL", default="https://t.me/")
 SUB_PROFILE_TITLE = config("SUB_PROFILE_TITLE", default="Subscription")
 SUB_CLIENT_NOTE = config("SUB_CLIENT_NOTE", default="")
+SUB_PROFILE_URL = config("SUB_PROFILE_URL", default="")
 BOT_URL = config("BOT_URL", default="")
 
 def _parse_server_text_list(v):
