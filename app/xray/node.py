@@ -16,6 +16,7 @@ from requests.packages.urllib3.poolmanager import PoolManager
 from websocket import WebSocketConnectionClosedException, WebSocketTimeoutException, create_connection
 
 from app.xray.config import XRayConfig
+from config import XRAY_NODE_CERT_FETCH_TIMEOUT
 from xray_api import XRay as XRayAPI
 
 
@@ -38,6 +39,20 @@ class NodeAPIError(Exception):
     def __init__(self, status_code, detail):
         self.status_code = status_code
         self.detail = detail
+
+
+def fetch_server_certificate(address: str, port: int, timeout: int) -> str:
+    try:
+        context = ssl._create_unverified_context()
+        with socket.create_connection((address, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            with context.wrap_socket(sock, server_hostname=address) as tls_sock:
+                cert = tls_sock.getpeercert(binary_form=True)
+        return ssl.DER_cert_to_PEM_cert(cert)
+    except socket.timeout as exc:
+        raise ConnectionError(f"Timed out while fetching node certificate from {address}:{port}") from exc
+    except Exception as exc:
+        raise ConnectionError(f"Failed to fetch node certificate from {address}:{port}: {exc}") from exc
 
 
 class ReSTXRayNode:
@@ -148,7 +163,9 @@ class ReSTXRayNode:
         return self._api
 
     def connect(self):
-        self._node_cert = ssl.get_server_certificate((self.address, self.port))
+        self._node_cert = fetch_server_certificate(
+            self.address, self.port, XRAY_NODE_CERT_FETCH_TIMEOUT
+        )
         self._node_certfile = string_to_temp_file(self._node_cert)
         self.session.verify = self._node_certfile.name
 
@@ -335,7 +352,9 @@ class RPyCXRayNode:
         tries = 0
         while True:
             tries += 1
-            self._node_cert = ssl.get_server_certificate((self.address, self.port))
+            self._node_cert = fetch_server_certificate(
+                self.address, self.port, XRAY_NODE_CERT_FETCH_TIMEOUT
+            )
             self._node_certfile = string_to_temp_file(self._node_cert)
             conn = rpyc.ssl_connect(self.address,
                                     self.port,

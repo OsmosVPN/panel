@@ -1,4 +1,5 @@
 from functools import lru_cache
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,7 @@ from app.models.node import NodeStatus
 from app.models.user import UserResponse
 from app.utils.concurrency import threaded_function
 from app.xray.node import XRayNode
+from config import XRAY_NODE_CONNECT_STALE_TIMEOUT
 from xray_api import XRay as XRayAPI
 from xray_api.types.account import Account, XTLSFlows
 
@@ -269,49 +271,96 @@ def add_node(dbnode: "DBNode"):
     return xray.nodes[dbnode.id]
 
 
-def _change_node_status(node_id: int, status: NodeStatus, message: str = None, version: str = None):
+def _change_node_status(node_id: int, status: NodeStatus, message: str = None, version: str = None) -> bool:
     with GetDB() as db:
         try:
             dbnode = crud.get_node_by_id(db, node_id)
             if not dbnode:
-                return
+                logger.warning(f"[node.status] node_id={node_id} not found for status={status.value}")
+                return False
 
             if dbnode.status == NodeStatus.disabled:
                 remove_node(dbnode.id)
-                return
+                logger.info(f"[node.status] node_id={node_id} is disabled; status update skipped")
+                return False
 
             crud.update_node_status(db, dbnode, status, message, version)
-        except SQLAlchemyError:
+            return True
+        except SQLAlchemyError as exc:
             db.rollback()
+            logger.error(
+                f"[node.status] failed to update node_id={node_id} status={status.value}: {type(exc).__name__}: {exc}"
+            )
+            raise
 
 
 global _connecting_nodes
-_connecting_nodes = {}
+_connecting_nodes = set()
+_connecting_started_at = {}
+_connecting_nodes_lock = threading.Lock()
+
+
+def _acquire_connect_slot(node_id: int, force: bool = False) -> bool:
+    now = time.time()
+    with _connecting_nodes_lock:
+        if node_id in _connecting_nodes:
+            started_at = _connecting_started_at.get(node_id, now)
+            age = now - started_at
+
+            if force and age >= XRAY_NODE_CONNECT_STALE_TIMEOUT:
+                logger.warning(
+                    f"[connect_node] force-acquire for stale lock, node_id={node_id}, age={age:.1f}s"
+                )
+                _connecting_nodes.discard(node_id)
+                _connecting_started_at.pop(node_id, None)
+            else:
+                logger.debug(
+                    f"[connect_node] skipped, already connecting node_id={node_id}, age={age:.1f}s"
+                )
+                return False
+
+        _connecting_nodes.add(node_id)
+        _connecting_started_at[node_id] = now
+        return True
+
+
+def _release_connect_slot(node_id: int):
+    with _connecting_nodes_lock:
+        _connecting_nodes.discard(node_id)
+        _connecting_started_at.pop(node_id, None)
 
 
 @threaded_function
-def connect_node(node_id, config=None):
-    global _connecting_nodes
-
-    if _connecting_nodes.get(node_id):
+def connect_node(node_id, config=None, force: bool = False):
+    if not _acquire_connect_slot(node_id, force=force):
         return
 
-    with GetDB() as db:
-        dbnode = crud.get_node_by_id(db, node_id)
-
-    if not dbnode:
-        return
+    dbnode = None
+    node = None
 
     try:
-        node = xray.nodes[dbnode.id]
-        assert node.connected
-    except (KeyError, AssertionError):
-        node = xray.operations.add_node(dbnode)
+        with GetDB() as db:
+            dbnode = crud.get_node_by_id(db, node_id)
 
-    try:
-        _connecting_nodes[node_id] = True
+        if not dbnode:
+            return
 
-        _change_node_status(node_id, NodeStatus.connecting)
+        if dbnode.status == NodeStatus.disabled:
+            remove_node(dbnode.id)
+            logger.info(f"[connect_node] skip disabled node_id={dbnode.id}")
+            return
+
+        try:
+            node = xray.nodes[dbnode.id]
+            assert node.connected
+        except (KeyError, AssertionError):
+            node = xray.operations.add_node(dbnode)
+
+        status_changed = _change_node_status(node_id, NodeStatus.connecting)
+        if not status_changed:
+            logger.info(f"[connect_node] status update rejected for node_id={node_id}")
+            return
+
         logger.info(f"Connecting to \"{dbnode.name}\" node")
 
         if config is None:
@@ -322,17 +371,27 @@ def connect_node(node_id, config=None):
         _change_node_status(node_id, NodeStatus.connected, version=version)
         logger.info(f"Connected to \"{dbnode.name}\" node, xray run on v{version}")
 
-    except Exception as e:
-        _change_node_status(node_id, NodeStatus.error, message=str(e))
-        logger.info(f"Unable to connect to \"{dbnode.name}\" node")
-
+    except Exception as exc:
+        try:
+            _change_node_status(node_id, NodeStatus.error, message=str(exc))
+        except Exception as status_exc:
+            logger.error(
+                f"[connect_node] failed to mark node_id={node_id} as error: "
+                f"{type(status_exc).__name__}: {status_exc}"
+            )
+        if dbnode:
+            logger.warning(f"Unable to connect to \"{dbnode.name}\" node: {type(exc).__name__}: {exc}")
+        else:
+            logger.warning(f"Unable to connect node_id={node_id}: {type(exc).__name__}: {exc}")
     finally:
-        if node_id in _connecting_nodes:
+        _release_connect_slot(node_id)
+        if dbnode:
             try:
-                del _connecting_nodes[node_id]
-            except KeyError:
-                pass
-            logger.debug(f"[connect_node] Node {node_id} removed from _connecting_nodes")
+                logger.debug(f"[connect_node] released lock for node_id={node_id} ({dbnode.name})")
+            except Exception:
+                logger.debug(f"[connect_node] released lock for node_id={node_id}")
+        else:
+            logger.debug(f"[connect_node] released lock for node_id={node_id}")
 
 
 @threaded_function
@@ -360,7 +419,13 @@ def restart_node(node_id, config=None):
         node.restart(config)
         logger.info(f"Xray core of \"{dbnode.name}\" node restarted")
     except Exception as e:
-        _change_node_status(node_id, NodeStatus.error, message=str(e))
+        try:
+            _change_node_status(node_id, NodeStatus.error, message=str(e))
+        except Exception as status_exc:
+            logger.error(
+                f"[restart_node] failed to mark node_id={node_id} as error: "
+                f"{type(status_exc).__name__}: {status_exc}"
+            )
         logger.info(f"Unable to restart node {node_id}")
         try:
             node.disconnect()
