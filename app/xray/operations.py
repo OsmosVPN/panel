@@ -364,15 +364,13 @@ def connect_node(node_id, config=None, force: bool = False):
         retries = max(1, XRAY_NODE_CONNECT_RETRIES)
         retry_delay = max(0, XRAY_NODE_CONNECT_RETRY_DELAY)
         last_exc = None
+        try:
+            node = xray.nodes[dbnode.id]
+        except KeyError:
+            node = xray.operations.add_node(dbnode)
 
         for attempt in range(1, retries + 1):
             try:
-                try:
-                    node = xray.nodes[dbnode.id]
-                    assert node.connected
-                except (KeyError, AssertionError):
-                    node = xray.operations.add_node(dbnode)
-
                 logger.info(
                     f"Connecting to \"{dbnode.name}\" node (attempt {attempt}/{retries})"
                 )
@@ -383,20 +381,15 @@ def connect_node(node_id, config=None, force: bool = False):
                 return
             except Exception as exc:
                 last_exc = exc
-                if node is not None:
-                    try:
-                        node.disconnect()
-                    except Exception:
-                        pass
-
                 if attempt < retries:
+                    delay = retry_delay * attempt
                     logger.warning(
                         f"[connect_node] attempt {attempt}/{retries} failed for "
                         f"node_id={node_id} ({dbnode.name}): {type(exc).__name__}: {exc}. "
-                        f"retry in {retry_delay}s"
+                        f"retry in {delay}s"
                     )
-                    if retry_delay:
-                        time.sleep(retry_delay)
+                    if delay:
+                        time.sleep(delay)
                     continue
                 raise last_exc
 

@@ -16,7 +16,19 @@ from requests.packages.urllib3.poolmanager import PoolManager
 from websocket import WebSocketConnectionClosedException, WebSocketTimeoutException, create_connection
 
 from app.xray.config import XRayConfig
-from config import XRAY_NODE_CERT_FETCH_TIMEOUT
+from config import (
+    XRAY_NODE_CERT_FETCH_TIMEOUT,
+    XRAY_NODE_GRPC_READY_RETRIES,
+    XRAY_NODE_GRPC_READY_RETRY_DELAY,
+    XRAY_NODE_GRPC_READY_TIMEOUT,
+    XRAY_NODE_REST_CONNECT_TIMEOUT,
+    XRAY_NODE_REST_DISCONNECT_TIMEOUT,
+    XRAY_NODE_REST_INFO_TIMEOUT,
+    XRAY_NODE_REST_PING_TIMEOUT,
+    XRAY_NODE_REST_RESTART_TIMEOUT,
+    XRAY_NODE_REST_START_TIMEOUT,
+    XRAY_NODE_REST_STOP_TIMEOUT,
+)
 from xray_api import XRay as XRayAPI
 
 
@@ -39,6 +51,27 @@ class NodeAPIError(Exception):
     def __init__(self, status_code, detail):
         self.status_code = status_code
         self.detail = detail
+
+
+def wait_for_grpc_ready(api: XRayAPI):
+    retries = max(1, XRAY_NODE_GRPC_READY_RETRIES)
+    timeout = max(1, XRAY_NODE_GRPC_READY_TIMEOUT)
+    retry_delay = max(0, XRAY_NODE_GRPC_READY_RETRY_DELAY)
+    last_exc = None
+
+    for attempt in range(1, retries + 1):
+        try:
+            grpc.channel_ready_future(api._channel).result(timeout=timeout)
+            return
+        except (grpc.FutureTimeoutError, grpc.FutureCancelledError) as exc:
+            last_exc = exc
+            if attempt < retries and retry_delay:
+                time.sleep(retry_delay)
+
+    raise ConnectionError(
+        f"Failed to connect to node's API after {retries} attempts "
+        f"(timeout={timeout}s, delay={retry_delay}s): {last_exc}"
+    )
 
 
 def fetch_server_certificate(address: str, port: int, timeout: int) -> str:
@@ -116,7 +149,8 @@ class ReSTXRayNode:
 
     def make_request(self, path: str, timeout: int, **params):
         try:
-            res = self.session.post(self._rest_api_url + path, timeout=timeout,
+            req_timeout = max(1, int(timeout))
+            res = self.session.post(self._rest_api_url + path, timeout=req_timeout,
                                     json={"session_id": self._session_id, **params})
             data = res.json()
         except Exception as e:
@@ -134,14 +168,14 @@ class ReSTXRayNode:
         if not self._session_id:
             return False
         try:
-            self.make_request("/ping", timeout=3)
+            self.make_request("/ping", timeout=XRAY_NODE_REST_PING_TIMEOUT)
             return True
         except NodeAPIError:
             return False
 
     @property
     def started(self):
-        res = self.make_request("/", timeout=3)
+        res = self.make_request("/", timeout=XRAY_NODE_REST_INFO_TIMEOUT)
         return res.get('started', False)
 
     @property
@@ -169,15 +203,15 @@ class ReSTXRayNode:
         self._node_certfile = string_to_temp_file(self._node_cert)
         self.session.verify = self._node_certfile.name
 
-        res = self.make_request("/connect", timeout=3)
+        res = self.make_request("/connect", timeout=XRAY_NODE_REST_CONNECT_TIMEOUT)
         self._session_id = res['session_id']
 
     def disconnect(self):
-        self.make_request("/disconnect", timeout=3)
+        self.make_request("/disconnect", timeout=XRAY_NODE_REST_DISCONNECT_TIMEOUT)
         self._session_id = None
 
     def get_version(self):
-        res = self.make_request("/", timeout=3)
+        res = self.make_request("/", timeout=XRAY_NODE_REST_INFO_TIMEOUT)
         return res.get('core_version')
 
     def start(self, config: XRayConfig):
@@ -188,7 +222,11 @@ class ReSTXRayNode:
         json_config = config.to_json()
 
         try:
-            res = self.make_request("/start", timeout=10, config=json_config)
+            res = self.make_request(
+                "/start",
+                timeout=XRAY_NODE_REST_START_TIMEOUT,
+                config=json_config
+            )
         except NodeAPIError as exc:
             if exc.detail == 'Xray is started already':
                 return self.restart(config)
@@ -204,10 +242,7 @@ class ReSTXRayNode:
             ssl_target_name="Gozargah"
         )
 
-        try:
-            grpc.channel_ready_future(self._api._channel).result(timeout=5)
-        except (grpc.FutureTimeoutError, grpc.FutureCancelledError):
-            raise ConnectionError('Failed to connect to node\'s API')
+        wait_for_grpc_ready(self._api)
 
         return res
 
@@ -215,7 +250,7 @@ class ReSTXRayNode:
         if not self.connected:
             self.connect()
 
-        self.make_request('/stop', timeout=5)
+        self.make_request('/stop', timeout=XRAY_NODE_REST_STOP_TIMEOUT)
         self._api = None
         self._started = False
 
@@ -226,7 +261,11 @@ class ReSTXRayNode:
         config = self._prepare_config(config)
         json_config = config.to_json()
 
-        res = self.make_request("/restart", timeout=10, config=json_config)
+        res = self.make_request(
+            "/restart",
+            timeout=XRAY_NODE_REST_RESTART_TIMEOUT,
+            config=json_config
+        )
 
         self._started = True
 
@@ -237,10 +276,7 @@ class ReSTXRayNode:
             ssl_target_name="Gozargah"
         )
 
-        try:
-            grpc.channel_ready_future(self._api._channel).result(timeout=5)
-        except (grpc.FutureTimeoutError, grpc.FutureCancelledError):
-            raise ConnectionError('Failed to connect to node\'s API')
+        wait_for_grpc_ready(self._api)
 
         return res
 
@@ -436,9 +472,8 @@ class RPyCXRayNode:
             ssl_target_name="Gozargah"
         )
         try:
-            grpc.channel_ready_future(self._api._channel).result(timeout=5)
-        except (grpc.FutureTimeoutError, grpc.FutureCancelledError):
-
+            wait_for_grpc_ready(self._api)
+        except ConnectionError:
             start_time = time.time()
             end_time = start_time + 3  # check logs for 3 seconds
             last_log = ''
