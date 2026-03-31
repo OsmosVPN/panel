@@ -11,7 +11,11 @@ from app.models.node import NodeStatus
 from app.models.user import UserResponse
 from app.utils.concurrency import threaded_function
 from app.xray.node import XRayNode
-from config import XRAY_NODE_CONNECT_STALE_TIMEOUT
+from config import (
+    XRAY_NODE_CONNECT_RETRIES,
+    XRAY_NODE_CONNECT_RETRY_DELAY,
+    XRAY_NODE_CONNECT_STALE_TIMEOUT,
+)
 from xray_api import XRay as XRayAPI
 from xray_api.types.account import Account, XTLSFlows
 
@@ -350,26 +354,51 @@ def connect_node(node_id, config=None, force: bool = False):
             logger.info(f"[connect_node] skip disabled node_id={dbnode.id}")
             return
 
-        try:
-            node = xray.nodes[dbnode.id]
-            assert node.connected
-        except (KeyError, AssertionError):
-            node = xray.operations.add_node(dbnode)
-
         status_changed = _change_node_status(node_id, NodeStatus.connecting)
         if not status_changed:
             logger.info(f"[connect_node] status update rejected for node_id={node_id}")
             return
 
-        logger.info(f"Connecting to \"{dbnode.name}\" node")
-
         if config is None:
             config = xray.config.include_db_users()
+        retries = max(1, XRAY_NODE_CONNECT_RETRIES)
+        retry_delay = max(0, XRAY_NODE_CONNECT_RETRY_DELAY)
+        last_exc = None
 
-        node.start(config)
-        version = node.get_version()
-        _change_node_status(node_id, NodeStatus.connected, version=version)
-        logger.info(f"Connected to \"{dbnode.name}\" node, xray run on v{version}")
+        for attempt in range(1, retries + 1):
+            try:
+                try:
+                    node = xray.nodes[dbnode.id]
+                    assert node.connected
+                except (KeyError, AssertionError):
+                    node = xray.operations.add_node(dbnode)
+
+                logger.info(
+                    f"Connecting to \"{dbnode.name}\" node (attempt {attempt}/{retries})"
+                )
+                node.start(config)
+                version = node.get_version()
+                _change_node_status(node_id, NodeStatus.connected, version=version)
+                logger.info(f"Connected to \"{dbnode.name}\" node, xray run on v{version}")
+                return
+            except Exception as exc:
+                last_exc = exc
+                if node is not None:
+                    try:
+                        node.disconnect()
+                    except Exception:
+                        pass
+
+                if attempt < retries:
+                    logger.warning(
+                        f"[connect_node] attempt {attempt}/{retries} failed for "
+                        f"node_id={node_id} ({dbnode.name}): {type(exc).__name__}: {exc}. "
+                        f"retry in {retry_delay}s"
+                    )
+                    if retry_delay:
+                        time.sleep(retry_delay)
+                    continue
+                raise last_exc
 
     except Exception as exc:
         try:
