@@ -1018,7 +1018,7 @@ export const UserDialog: FC<UserDialogProps> = () => {
 
       <Modal isOpen={devicesOpen} onClose={() => setDevicesOpen(false)} size="6xl">
         <ModalOverlay bg="blackAlpha.300" backdropFilter="blur(10px)" />
-        <ModalContent mx="3">
+        <ModalContent mx="3" maxW="calc(100vw - 2rem)">
           <ModalHeader pt={6}>
             <HStack gap={2} justifyContent="space-between">
               <Text fontWeight="semibold" fontSize="lg">
@@ -1027,7 +1027,7 @@ export const UserDialog: FC<UserDialogProps> = () => {
             </HStack>
           </ModalHeader>
           <ModalCloseButton mt={3} />
-          <ModalBody>
+          <ModalBody overflowX="hidden">
             {devicesError && (
               <Alert status="error" mb="3">
                 <AlertIcon />
@@ -1039,7 +1039,21 @@ export const UserDialog: FC<UserDialogProps> = () => {
                 <Spinner />
               </Flex>
             ) : devices.length ? (
-              <Table size="sm">
+              <Box w="full" overflowX="auto">
+                <Table
+                  size="sm"
+                  w="full"
+                  tableLayout="fixed"
+                  sx={{
+                    th: { whiteSpace: "normal", px: 2 },
+                    td: {
+                      whiteSpace: "normal",
+                      wordBreak: "break-word",
+                      px: 2,
+                      verticalAlign: "top",
+                    },
+                  }}
+                >
                 <Thead>
                   <Tr>
                     <Th>HWID</Th>
@@ -1049,7 +1063,7 @@ export const UserDialog: FC<UserDialogProps> = () => {
                     <Th>User-Agent</Th>
                     <Th>{t("userDialog.deviceFirstSeen")}</Th>
                     <Th>{t("userDialog.deviceLastSeen")}</Th>
-                    <Th>{t("delete")}</Th>
+                    <Th w="72px" textAlign="center" />
                   </Tr>
                 </Thead>
                 <Tbody>
@@ -1070,7 +1084,7 @@ export const UserDialog: FC<UserDialogProps> = () => {
                           ? dayjs(device.last_seen).format("YYYY-MM-DD HH:mm")
                           : "-"}
                       </Td>
-                      <Td>
+                      <Td textAlign="center">
                         <Tooltip label={t("delete")} placement="top">
                           <IconButton
                             aria-label={t("delete")}
@@ -1086,7 +1100,8 @@ export const UserDialog: FC<UserDialogProps> = () => {
                     </Tr>
                   ))}
                 </Tbody>
-              </Table>
+                </Table>
+              </Box>
             ) : (
               <Text color="gray.500">{t("userDialog.devicesEmpty")}</Text>
             )}
