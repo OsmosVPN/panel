@@ -40,6 +40,7 @@ import {
 import {
   ChartPieIcon,
   PencilIcon,
+  TrashIcon,
   UserPlusIcon,
 } from "@heroicons/react/24/outline";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -89,6 +90,13 @@ const UserUsageIcon = chakra(ChartPieIcon, {
   baseStyle: {
     w: 5,
     h: 5,
+  },
+});
+
+const DeleteDeviceIcon = chakra(TrashIcon, {
+  baseStyle: {
+    w: 4,
+    h: 4,
   },
 });
 
@@ -256,6 +264,7 @@ export const UserDialog: FC<UserDialogProps> = () => {
   const [error, setError] = useState<string | null>("");
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [devicesLoading, setDevicesLoading] = useState(false);
+  const [deletingDeviceId, setDeletingDeviceId] = useState<number | null>(null);
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [devices, setDevices] = useState<UserDevice[]>([]);
   const toast = useToast();
@@ -407,6 +416,31 @@ export const UserDialog: FC<UserDialogProps> = () => {
   const openDevices = () => {
     setDevicesOpen(true);
     loadDevices();
+  };
+
+  const deleteDevice = async (deviceId: number) => {
+    if (!editingUser) return;
+    setDeletingDeviceId(deviceId);
+    setDevicesError(null);
+    try {
+      await fetch(`/user/${editingUser.username}/devices/${deviceId}`, {
+        method: "DELETE",
+      });
+      setDevices((prev) => prev.filter((device) => device.id !== deviceId));
+      toast({
+        title: t("userDialog.deviceDeleted"),
+        status: "success",
+        isClosable: true,
+        position: "top",
+        duration: 3000,
+      });
+    } catch (err: any) {
+      setDevicesError(
+        err?.response?._data?.detail || t("userDialog.deviceDeleteError")
+      );
+    } finally {
+      setDeletingDeviceId(null);
+    }
   };
 
   const handleResetUsage = () => {
@@ -1015,6 +1049,7 @@ export const UserDialog: FC<UserDialogProps> = () => {
                     <Th>User-Agent</Th>
                     <Th>{t("userDialog.deviceFirstSeen")}</Th>
                     <Th>{t("userDialog.deviceLastSeen")}</Th>
+                    <Th>{t("delete")}</Th>
                   </Tr>
                 </Thead>
                 <Tbody>
@@ -1034,6 +1069,19 @@ export const UserDialog: FC<UserDialogProps> = () => {
                         {device.last_seen
                           ? dayjs(device.last_seen).format("YYYY-MM-DD HH:mm")
                           : "-"}
+                      </Td>
+                      <Td>
+                        <Tooltip label={t("delete")} placement="top">
+                          <IconButton
+                            aria-label={t("delete")}
+                            size="xs"
+                            variant="ghost"
+                            colorScheme="red"
+                            icon={<DeleteDeviceIcon />}
+                            isLoading={deletingDeviceId === device.id}
+                            onClick={() => deleteDevice(device.id)}
+                          />
+                        </Tooltip>
                       </Td>
                     </Tr>
                   ))}
