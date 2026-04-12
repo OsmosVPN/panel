@@ -625,13 +625,11 @@ def register_user_device(
     unknown_hwid = "Неизвестное устройство"
     unknown_value = "Неизвестно"
     if not hwid:
+        if dbuser.device_limit:
+            return False, True
         dbdevice = get_user_device_by_hwid(db, dbuser, unknown_hwid)
         if dbdevice:
             return False, True
-        if dbuser.device_limit:
-            current = count_user_devices(db, dbuser)
-            if current >= dbuser.device_limit:
-                return False, False
         dbdevice = UserDevice(
             user_id=dbuser.id,
             hwid=unknown_hwid,
