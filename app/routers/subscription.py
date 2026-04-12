@@ -1,4 +1,5 @@
 import re
+import json
 from datetime import datetime, timezone
 import math
 from app.db.models import User
@@ -95,6 +96,23 @@ def get_subscription_user_info(user: UserResponse) -> dict:
     }
 
 
+def get_subscription_devices_payload(db: Session, dbuser: User) -> list[dict]:
+    devices = crud.get_user_devices(db, dbuser)
+    return [
+        {
+            "id": device.id,
+            "hwid": device.hwid,
+            "device_os": device.device_os,
+            "ver_os": device.ver_os,
+            "device_model": device.device_model,
+            "user_agent": device.user_agent,
+            "first_seen": device.first_seen.isoformat() if device.first_seen else None,
+            "last_seen": device.last_seen.isoformat() if device.last_seen else None,
+        }
+        for device in devices
+    ]
+
+
 def get_empty_subscription_user(user: UserResponse) -> UserResponse:
     return user.model_copy(update={"proxies": {}, "inbounds": {}})
 
@@ -118,10 +136,11 @@ def user_subscription(
     crud.ensure_subscription_token(db, dbuser)
     is_expired = bool(dbuser.expire and dbuser.expire > 0 and dbuser.expire < int(datetime.now(timezone.utc).timestamp()))
     user: UserResponse = UserResponse.model_validate(dbuser)
+    devices_payload = get_subscription_devices_payload(db, dbuser)
 
     html_device_limited = False
     if not is_revoked and not is_expired and dbuser.device_limit:
-        html_device_limited = crud.count_user_devices(db, dbuser) >= dbuser.device_limit
+        html_device_limited = crud.count_user_devices(db, dbuser) > dbuser.device_limit
 
     accept_header = request.headers.get("Accept", "")
     if "text/html" in accept_header:
@@ -149,7 +168,11 @@ def user_subscription(
         return HTMLResponse(
             render_template(
                 SUBSCRIPTION_PAGE_TEMPLATE,
-                {"user": user}
+                {
+                    "user": user,
+                    "devices_count": len(devices_payload),
+                    "devices_json_escaped": json.dumps(devices_payload, ensure_ascii=False).replace("\\", "\\\\").replace("'", "\\'"),
+                }
             )
         )
 
@@ -381,9 +404,19 @@ def user_subscription(
 @router.get("/{token}/info", response_model=SubscriptionUserResponse)
 def user_subscription_info(
     dbuser: UserResponse = Depends(get_validated_sub),
+    db: Session = Depends(get_db),
 ):
     """Retrieves detailed information about the user's subscription."""
-    return dbuser
+    db_user_model = crud.get_user(db, dbuser.username)
+    if not db_user_model:
+        return dbuser
+
+    devices_payload = get_subscription_devices_payload(db, db_user_model)
+
+    payload = dbuser.model_dump()
+    payload["devices_count"] = len(devices_payload)
+    payload["devices"] = devices_payload
+    return payload
 
 
 @router.get("/{token}/usage")
@@ -457,7 +490,6 @@ def user_subscription_with_client_type(
             for key, val in get_subscription_user_info(user).items()
         )
     }
-
     config = client_config.get(client_type)
     conf = generate_subscription(user=user,
                                  config_format=config["config_format"],

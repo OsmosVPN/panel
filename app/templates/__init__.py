@@ -7,7 +7,7 @@ from config import CUSTOM_TEMPLATES_DIRECTORY
 
 from .filters import CUSTOM_FILTERS
 
-template_directories = ["app/templates"]
+template_directories = ["app/templates", "templates"]
 if CUSTOM_TEMPLATES_DIRECTORY:
     # User's templates have priority over default templates
     template_directories.insert(0, CUSTOM_TEMPLATES_DIRECTORY)
