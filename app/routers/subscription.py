@@ -138,30 +138,19 @@ def user_subscription(
     user: UserResponse = UserResponse.model_validate(dbuser)
     devices_payload = get_subscription_devices_payload(db, dbuser)
 
-    html_device_limited = False
-    if not is_revoked and not is_expired and dbuser.device_limit:
-        html_device_limited = crud.count_user_devices(db, dbuser) > dbuser.device_limit
-
     accept_header = request.headers.get("Accept", "")
     if "text/html" in accept_header:
         if is_revoked:
             return HTMLResponse(
                 render_template(
-                    "sub/revoked.html",
+                    "subscription/revoked.html",
                     {"bot_url": BOT_URL}
                 )
             )
         if is_expired:
             return HTMLResponse(
                 render_template(
-                    "sub/expired.html",
-                    {"bot_url": BOT_URL}
-                )
-            )
-        if html_device_limited:
-            return HTMLResponse(
-                render_template(
-                    "sub/device_limit.html",
+                    "subscription/expired.html",
                     {"bot_url": BOT_URL}
                 )
             )
