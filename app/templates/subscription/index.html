@@ -4,16 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Информация о подписке</title>
-    <!-- <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.0/dist/cdn.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script> -->
     <link rel="stylesheet" href="/statics/main.css">
     <link rel="icon" href="data:,">
-    <script defer src="/statics/vendor/js/alpinejs.js"></script>
     <script defer src="/statics/vendor/js/qrcode.min.js"></script>
+    <script defer src="/statics/vendor/js/alpinejs.js"></script>
     <style>
       body {
         font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
@@ -100,10 +94,13 @@
         status: {
           value: "{{ user.status.value }}"
         },
-        used_traffic: "{ user.used_traffic or 0 }",
-        data_limit: "{% if not user.data_limit %}0{% else %}{{ user.data_limit }}{% endif %}",
-        expire: "{% if not user.expire %}0{% else %}{{ user.expire }}{% endif %}",
-        reset_strategy: "{{ user.data_limit_reset_strategy.value }}"
+        used_traffic: Number("{{ user.used_traffic or 0 }}"),
+        data_limit: Number("{{ user.data_limit or 0 }}"),
+        expire: Number("{{ user.expire or 0 }}"),
+        reset_strategy: "{{ user.data_limit_reset_strategy.value }}",
+        device_limit: Number("{{ user.device_limit or 0 }}"),
+        devices_count: Number("{{ devices_count|default(0) }}"),
+        devices: JSON.parse('{{ devices_json_escaped|default("[]") }}')
       };
 
       function detectOS() {
@@ -230,9 +227,24 @@
             };
             return intervals[this.user.reset_strategy] || '';
           },
+          formatDeviceDate(value) {
+            if (!value) return '—';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '—';
+            return date.toLocaleString('ru-RU', {
+              day: '2-digit',
+              month: '2-digit',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            });
+          },
           openQrModal() {
             this.isQrModalOpen = true;
             this.$nextTick(() => {
+              if (typeof window.QRCode !== 'function') {
+                return;
+              }
               const qrContainer = document.getElementById('qrcode-large');
               qrContainer.innerHTML = '';
               new QRCode(qrContainer, {
@@ -269,7 +281,7 @@
     </script>
   </head>
   <body class="antialiased">
-    <div x-data="subscriptionManager" x-init="init()" x-cloak class="max-w-sm mx-auto p-4" style="width: 393px;">
+    <div x-data="subscriptionManager" x-init="init()" x-cloak class="max-w-sm mx-auto p-4">
       <header class="text-center mb-6">
         <h1 class="text-2xl font-bold">Настройка VPN</h1>
         <p class="text-gray-400 text-sm mt-1">Выберите устройство и следуйте инструкции</p>
@@ -433,9 +445,9 @@ chmod +x Happ.AppImage
             </svg>
           </button>
           <div x-show="open" x-transition class="p-4 pt-0">
-            <div class="flex items-center space-x-4">
+            <div class="flex items-center space-x-4 gap-2">
               <div class="flex-shrink-0">
-                <div class="radial-progress" :style="`--size: 7rem; --thickness: 0.7rem; --value: ${usagePercentage}; --color: #34d399;`">
+                <div class="radial-progress" :style="`--size: 6rem; --thickness: 0.6rem; --value: ${usagePercentage}; --color: #34d399;`">
                   <div class="radial-progress-text text-xl font-bold" x-text="`${usagePercentage}%`"></div>
                 </div>
               </div>
@@ -462,7 +474,30 @@ chmod +x Happ.AppImage
                 </div>
               </div>
             </div>
-            <p class="text-xs text-center text-gray-500 mt-3" x-text="resetText" x-show="resetText"></p>
+            <p class="text-xs text-center text-gray-500 mt-2" x-text="resetText" x-show="resetText"></p>
+
+            <div class="mt-4 pt-4 border-t border-gray-700">
+              <div class="flex justify-between items-center mb-2">
+                <span class="text-gray-400 font-medium text-sm">Подключенные устройства:</span>
+                <span class="font-medium text-sm" x-text="`${user.devices_count} / ${user.device_limit || '∞'}`"></span>
+              </div>
+
+              <template x-if="user.devices_count > 0">
+                <div class="space-y-2 max-h-48 overflow-y-auto">
+                  <template x-for="device in user.devices" :key="device.id">
+                    <div class="bg-gray-700/60 rounded-md mt-2 text-xs">
+                      <div class="flex justify-between items-center">
+                        <span class="text-gray-300 text-sm font-medium" x-text="device.device_model || device.device_os || 'Устройство'"></span>
+                      </div>
+                      <div class="text-gray-400 break-all" x-text="device.hwid"></div>
+                      <div class="text-gray-500 mt-1">Первое подключение: <span class="text-gray-300" x-text="formatDeviceDate(device.first_seen)"></span></div>
+                      <div class="text-gray-500">Последний онлайн: <span class="text-gray-300" x-text="formatDeviceDate(device.last_seen)"></span></div>
+                      <hr class="flex-grow border-t border-gray-700 mt-2">
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
         <!--div class="bg-gray-800 p-4 rounded-lg">

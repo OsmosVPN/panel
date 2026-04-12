@@ -361,6 +361,8 @@ class SubscriptionUserResponse(UserResponse):
     note: str | None = Field(None, exclude=True)
     inbounds: Dict[ProxyTypes, List[str]] | None = Field(None, exclude=True)
     auto_delete_in_days: int | None = Field(None, exclude=True)
+    devices_count: int = 0
+    devices: List["UserDeviceResponse"] = []
     model_config = ConfigDict(from_attributes=True)
 
 
