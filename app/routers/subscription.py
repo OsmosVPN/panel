@@ -136,7 +136,6 @@ def user_subscription(
     crud.ensure_subscription_token(db, dbuser)
     is_expired = bool(dbuser.expire and dbuser.expire > 0 and dbuser.expire < int(datetime.now(timezone.utc).timestamp()))
     user: UserResponse = UserResponse.model_validate(dbuser)
-    devices_payload = get_subscription_devices_payload(db, dbuser)
 
     accept_header = request.headers.get("Accept", "")
     if "text/html" in accept_header:
@@ -157,11 +156,7 @@ def user_subscription(
         return HTMLResponse(
             render_template(
                 SUBSCRIPTION_PAGE_TEMPLATE,
-                {
-                    "user": user,
-                    "devices_count": len(devices_payload),
-                    "devices_json_escaped": json.dumps(devices_payload, ensure_ascii=False).replace("\\", "\\\\").replace("'", "\\'"),
-                }
+                {"user": user}
             )
         )
 
@@ -393,19 +388,35 @@ def user_subscription(
 @router.get("/{token}/info", response_model=SubscriptionUserResponse)
 def user_subscription_info(
     dbuser: UserResponse = Depends(get_validated_sub),
-    db: Session = Depends(get_db),
 ):
     """Retrieves detailed information about the user's subscription."""
+    return dbuser
+
+
+@router.get("/{token}/devices")
+def list_subscription_devices(
+    dbuser: UserResponse = Depends(get_validated_sub),
+    db: Session = Depends(get_db),
+):
+    """List all devices registered for this subscription."""
     db_user_model = crud.get_user(db, dbuser.username)
     if not db_user_model:
-        return dbuser
+        return {"devices": []}
+    return {"devices": get_subscription_devices_payload(db, db_user_model)}
 
-    devices_payload = get_subscription_devices_payload(db, db_user_model)
 
-    payload = dbuser.model_dump()
-    payload["devices_count"] = len(devices_payload)
-    payload["devices"] = devices_payload
-    return payload
+@router.delete("/{token}/devices/{device_id}")
+def delete_subscription_device(
+    device_id: int,
+    dbuser: UserResponse = Depends(get_validated_sub),
+    db: Session = Depends(get_db),
+):
+    """Delete a device by ID using the subscription token."""
+    dbdevice = crud.get_user_device(db, dbuser, device_id)
+    if not dbdevice:
+        raise HTTPException(status_code=404, detail="Device not found")
+    crud.delete_user_device(db, dbdevice)
+    return {"detail": "Device successfully deleted"}
 
 
 @router.get("/{token}/usage")

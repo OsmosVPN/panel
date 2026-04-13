@@ -78,11 +78,6 @@
       }
     </style>
     <script>
-      fetch('/settings', {
-        method: 'GET'
-      }).then(res => {
-        let supportAccount = res.headers.get("X-Custom-SUPPORT_ACCOUNT");
-      });
       const sub = "{{ user.subscription_url }}";
       let fullUrl = `{{ user.subscription_url }}`;
       if (sub && sub.startsWith('/')) {
@@ -99,8 +94,8 @@
         expire: Number("{{ user.expire or 0 }}"),
         reset_strategy: "{{ user.data_limit_reset_strategy.value }}",
         device_limit: Number("{{ user.device_limit or 0 }}"),
-        devices_count: Number("{{ devices_count|default(0) }}"),
-        devices: JSON.parse('{{ devices_json_escaped|default("[]") }}')
+        devices_count: 0,
+        devices: []
       };
 
       function detectOS() {
@@ -173,6 +168,15 @@
                 });
               }
             });
+            fetch(`${this.user.subscription_url}/devices`)
+              .then(r => r.ok ? r.json() : null)
+              .then(data => {
+                if (data && Array.isArray(data.devices)) {
+                  this.user.devices = data.devices;
+                  this.user.devices_count = data.devices.length;
+                }
+              })
+              .catch(() => {});
           },
           get currentOs() {
             return this.osOptions.find(os => os.id === this.selectedOs) || this.osOptions[0];
@@ -275,6 +279,18 @@
           copyTerminalCommands(button, successText = 'Готово!') {
             const text = document.getElementById('linux-commands').innerText;
             this.copyToClipboard(text, button, successText);
+          },
+          async deleteDevice(deviceId) {
+            if (!confirm('Удалить это устройство из списка?')) return;
+            try {
+              const res = await fetch(`${this.user.subscription_url}/devices/${deviceId}`, { method: 'DELETE' });
+              if (res.ok) {
+                this.user.devices = this.user.devices.filter(d => d.id !== deviceId);
+                this.user.devices_count = this.user.devices.length;
+              }
+            } catch (e) {
+              // ignore
+            }
           },
         }));
       });
@@ -488,6 +504,11 @@ chmod +x Happ.AppImage
                     <div class="bg-gray-700/60 rounded-md mt-2 text-xs">
                       <div class="flex justify-between items-center">
                         <span class="text-gray-300 text-sm font-medium" x-text="device.device_model || device.device_os || 'Устройство'"></span>
+                        <button @click="deleteDevice(device.id)" class="text-red-400 hover:text-red-300 ml-2 flex-shrink-0" title="Удалить устройство">
+                          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+                          </svg>
+                        </button>
                       </div>
                       <div class="text-gray-400 break-all" x-text="device.hwid"></div>
                       <div class="text-gray-500 mt-1">Первое подключение: <span class="text-gray-300" x-text="formatDeviceDate(device.first_seen)"></span></div>
