@@ -1,21 +1,25 @@
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from operator import attrgetter
 from typing import Union
 
 from pymysql.err import OperationalError
-from sqlalchemy import and_, bindparam, insert, select, update
+from sqlalchemy import and_, bindparam, insert, select, text, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.dml import Insert
 
-from app import scheduler, xray
+from app import logger, scheduler, xray
 from app.db import GetDB
 from app.db.models import Admin, NodeUsage, NodeUserUsage, System, User
+from app.utils.concurrency import get_xray_executor
 from config import (
     DISABLE_RECORDING_NODE_USAGE,
+    DISABLE_RECORDING_NODE_USER_USAGE,
+    JOB_CLEANUP_NODE_USER_USAGE_INTERVAL,
     JOB_RECORD_NODE_USAGES_INTERVAL,
     JOB_RECORD_USER_USAGES_INTERVAL,
+    NODE_USER_USAGE_CLEANUP_BATCH_SIZE,
+    NODE_USER_USAGE_RETENTION_DAYS,
 )
 from xray_api import XRay as XRayAPI
 from xray_api import exc as xray_exc
@@ -136,8 +140,8 @@ def record_user_usages():
             api_instances[node_id] = node.api
             usage_coefficient[node_id] = node.usage_coefficient  # fetch the usage coefficient
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {node_id: executor.submit(get_users_stats, api) for node_id, api in api_instances.items()}
+    executor = get_xray_executor()
+    futures = {node_id: executor.submit(get_users_stats, api) for node_id, api in api_instances.items()}
     api_params = {node_id: future.result() for node_id, future in futures.items()}
 
     users_usage = defaultdict(int)
@@ -150,7 +154,12 @@ def record_user_usages():
         return
 
     with GetDB() as db:
-        user_admin_map = dict(db.query(User.id, User.admin_id).all())
+        user_ids = [int(u["uid"]) for u in users_usage]
+        user_admin_map = dict(
+            db.query(User.id, User.admin_id)
+            .filter(User.id.in_(user_ids))
+            .all()
+        )
 
     admin_usage = defaultdict(int)
     for user_usage in users_usage:
@@ -176,7 +185,7 @@ def record_user_usages():
                 values(users_usage=Admin.users_usage + bindparam('value'))
             safe_execute(db, admin_update_stmt, admin_data)
 
-    if DISABLE_RECORDING_NODE_USAGE:
+    if DISABLE_RECORDING_NODE_USER_USAGE:
         return
 
     for node_id, params in api_params.items():
@@ -189,8 +198,8 @@ def record_node_usages():
         if node.connected and node.started:
             api_instances[node_id] = node.api
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {node_id: executor.submit(get_outbounds_stats, api) for node_id, api in api_instances.items()}
+    executor = get_xray_executor()
+    futures = {node_id: executor.submit(get_outbounds_stats, api) for node_id, api in api_instances.items()}
     api_params = {node_id: future.result() for node_id, future in futures.items()}
 
     total_up = 0
@@ -217,9 +226,34 @@ def record_node_usages():
         record_node_stats(params, node_id)
 
 
+def cleanup_node_user_usages():
+    if NODE_USER_USAGE_RETENTION_DAYS <= 0:
+        return
+    cutoff = datetime.utcnow() - timedelta(days=NODE_USER_USAGE_RETENTION_DAYS)
+    with GetDB() as db:
+        if db.bind.name == 'mysql':
+            result = db.execute(
+                text("DELETE FROM node_user_usages WHERE created_at < :cutoff LIMIT :batch_size"),
+                {"cutoff": cutoff, "batch_size": NODE_USER_USAGE_CLEANUP_BATCH_SIZE}
+            )
+        else:
+            result = db.execute(
+                text("DELETE FROM node_user_usages WHERE id IN "
+                     "(SELECT id FROM node_user_usages WHERE created_at < :cutoff LIMIT :batch_size)"),
+                {"cutoff": cutoff, "batch_size": NODE_USER_USAGE_CLEANUP_BATCH_SIZE}
+            )
+        db.commit()
+        deleted = result.rowcount
+    if deleted > 0:
+        logger.info(f"[cleanup] deleted {deleted} rows from node_user_usages (cutoff={cutoff})")
+
+
 scheduler.add_job(record_user_usages, 'interval',
                   seconds=JOB_RECORD_USER_USAGES_INTERVAL,
                   coalesce=True, max_instances=1)
 scheduler.add_job(record_node_usages, 'interval',
                   seconds=JOB_RECORD_NODE_USAGES_INTERVAL,
+                  coalesce=True, max_instances=1)
+scheduler.add_job(cleanup_node_user_usages, 'interval',
+                  seconds=JOB_CLEANUP_NODE_USER_USAGE_INTERVAL,
                   coalesce=True, max_instances=1)
