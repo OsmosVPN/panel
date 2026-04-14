@@ -7,6 +7,7 @@ load_dotenv()
 SQLALCHEMY_DATABASE_URL = config("SQLALCHEMY_DATABASE_URL", default="sqlite:///db.sqlite3")
 SQLALCHEMY_POOL_SIZE = config("SQLALCHEMY_POOL_SIZE", cast=int, default=10)
 SQLIALCHEMY_MAX_OVERFLOW = config("SQLIALCHEMY_MAX_OVERFLOW", cast=int, default=30)
+SQLALCHEMY_POOL_TIMEOUT = config("SQLALCHEMY_POOL_TIMEOUT", cast=int, default=30)
 
 UVICORN_HOST = config("UVICORN_HOST", default="0.0.0.0")
 UVICORN_PORT = config("UVICORN_PORT", cast=int, default=8000)
@@ -32,6 +33,7 @@ XRAY_FALLBACKS_INBOUND_TAG = config("XRAY_FALLBACKS_INBOUND_TAG", cast=str, defa
 XRAY_EXECUTABLE_PATH = config("XRAY_EXECUTABLE_PATH", default="/usr/local/bin/xray")
 XRAY_ASSETS_PATH = config("XRAY_ASSETS_PATH", default="/usr/local/share/xray")
 XRAY_EXCLUDE_INBOUND_TAGS = config("XRAY_EXCLUDE_INBOUND_TAGS", default='').split()
+XRAY_THREAD_POOL_SIZE = config("XRAY_THREAD_POOL_SIZE", cast=int, default=20)
 XRAY_SUBSCRIPTION_URL_PREFIX = config("XRAY_SUBSCRIPTION_URL_PREFIX", default="").strip("/")
 XRAY_SUBSCRIPTION_PATH = config("XRAY_SUBSCRIPTION_PATH", default="sub").strip("/")
 
@@ -135,6 +137,8 @@ NOTIFY_DAYS_LEFT = config(
 )
 
 DISABLE_RECORDING_NODE_USAGE = config("DISABLE_RECORDING_NODE_USAGE", cast=bool, default=False)
+DISABLE_RECORDING_NODE_USER_USAGE = config("DISABLE_RECORDING_NODE_USER_USAGE", cast=bool, default=False)
+NODE_USER_USAGE_RETENTION_DAYS = config("NODE_USER_USAGE_RETENTION_DAYS", cast=int, default=0)
 
 # headers: profile-update-interval, support-url, profile-title
 SUB_UPDATE_INTERVAL = config("SUB_UPDATE_INTERVAL", default="12")
@@ -181,6 +185,8 @@ JOB_RECORD_NODE_USAGES_INTERVAL = config("JOB_RECORD_NODE_USAGES_INTERVAL", cast
 JOB_RECORD_USER_USAGES_INTERVAL = config("JOB_RECORD_USER_USAGES_INTERVAL", cast=int, default=10)
 JOB_REVIEW_USERS_INTERVAL = config("JOB_REVIEW_USERS_INTERVAL", cast=int, default=10)
 JOB_SEND_NOTIFICATIONS_INTERVAL = config("JOB_SEND_NOTIFICATIONS_INTERVAL", cast=int, default=30)
+JOB_CLEANUP_NODE_USER_USAGE_INTERVAL = config("JOB_CLEANUP_NODE_USER_USAGE_INTERVAL", cast=int, default=3600)
+NODE_USER_USAGE_CLEANUP_BATCH_SIZE = config("NODE_USER_USAGE_CLEANUP_BATCH_SIZE", cast=int, default=50000)
 
 # Node connection reliability guards
 XRAY_NODE_CONNECT_STALE_TIMEOUT = config("XRAY_NODE_CONNECT_STALE_TIMEOUT", cast=int, default=120)
