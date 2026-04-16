@@ -2,14 +2,16 @@ name: Build
 
 on:
   push:
-    branches:
-      - dev
-    tags:
-      - "v*.*.*"
+    branches: [master, dev]
+    tags: ["v*.*.*"]
+  pull_request:
 
 jobs:
   build-docker-image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -34,27 +36,25 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Define image tags
-      - name: Define Docker tags
+      - name: Docker metadata
         id: meta
-        run: |
-          IMAGE_DH="${{ secrets.DOCKERHUB_USERNAME }}/panel"
-          IMAGE_GH="ghcr.io/${{ github.repository_owner }}/panel"
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/panel
+            ghcr.io/${{ github.repository_owner }}/panel
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
-          if [[ "${GITHUB_REF}" == "refs/heads/dev" ]]; then
-            echo "TAGS=$IMAGE_DH:dev,$IMAGE_GH:dev" >> $GITHUB_OUTPUT
-          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "TAGS=$IMAGE_DH:latest,$IMAGE_DH:${GITHUB_REF_NAME},$IMAGE_GH:latest,$IMAGE_GH:${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
-          else
-            echo "No image build for this ref"
-            exit 0
-          fi
-
-      # Build and push
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.TAGS }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
