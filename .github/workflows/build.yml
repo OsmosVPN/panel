@@ -2,16 +2,14 @@ name: Build
 
 on:
   push:
-    branches: [master, dev]
-    tags: ["v*.*.*"]
-  pull_request:
+    branches:
+      - dev
+    tags:
+      - "v*.*.*"
 
 jobs:
   build-docker-image:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
 
     steps:
       - name: Checkout repository
@@ -23,12 +21,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -36,25 +28,29 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
+      # Define image tags
+      - name: Define Docker tags
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/panel
-            ghcr.io/${{ github.repository_owner }}/panel
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_GH="ghcr.io/${OWNER_LC}/panel"
 
+          if [[ "${GITHUB_REF}" == "refs/heads/dev" ]]; then
+            echo "TAGS=$IMAGE_GH:dev" >> $GITHUB_OUTPUT
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "TAGS=$IMAGE_GH:latest,$IMAGE_GH:${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          else
+            echo "No image build for this ref"
+            exit 0
+          fi
+
+      # Build and push
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.TAGS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
