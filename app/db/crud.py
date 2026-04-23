@@ -554,6 +554,11 @@ def update_user(db: Session, dbuser: User, modify: UserModify) -> User:
 def get_user_devices(db: Session, dbuser: User) -> List[UserDevice]:
     return db.query(UserDevice).filter(UserDevice.user_id == dbuser.id).order_by(UserDevice.last_seen.desc()).all()
 
+def get_active_user_devices(db: Session, dbuser: User) -> List[UserDevice]:
+    return db.query(UserDevice).filter(
+        UserDevice.user_id == dbuser.id,
+        UserDevice.status == "active"
+    ).order_by(UserDevice.last_seen.desc()).all()
 
 def get_user_device(db: Session, dbuser: User, device_id: int) -> Optional[UserDevice]:
     return db.query(UserDevice).filter(UserDevice.user_id == dbuser.id, UserDevice.id == device_id).first()

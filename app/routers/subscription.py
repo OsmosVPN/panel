@@ -101,7 +101,7 @@ def get_subscription_user_info(user: UserResponse) -> dict:
 
 
 def get_subscription_devices_payload(db: Session, dbuser: User) -> list[dict]:
-    devices = crud.get_user_devices(db, dbuser)
+    devices = crud.get_active_user_devices(db, dbuser)
     return [
         {
             "id": device.id,
