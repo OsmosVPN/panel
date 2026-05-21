@@ -146,6 +146,8 @@ NODE_USER_USAGE_RETENTION_DAYS = config("NODE_USER_USAGE_RETENTION_DAYS", cast=i
 SUB_UPDATE_INTERVAL = config("SUB_UPDATE_INTERVAL", default="12")
 SUB_SUPPORT_URL = config("SUB_SUPPORT_URL", default="https://t.me/")
 SUB_PROFILE_TITLE = config("SUB_PROFILE_TITLE", default="Subscription")
+SUB_ROUTING_HAPP = config("SUB_ROUTING_HAPP", default="")
+SUB_ROUTING_V2RAYTUN = config("SUB_ROUTING_V2RAYTUN", default="")
 SUB_CLIENT_NOTE = config("SUB_CLIENT_NOTE", default="")
 SUB_PROFILE_URL = config("SUB_PROFILE_URL", default="")
 BOT_URL = config("BOT_URL", default="")
@@ -193,6 +195,10 @@ JOB_REVIEW_USERS_INTERVAL = config("JOB_REVIEW_USERS_INTERVAL", cast=int, defaul
 JOB_SEND_NOTIFICATIONS_INTERVAL = config("JOB_SEND_NOTIFICATIONS_INTERVAL", cast=int, default=30)
 JOB_CLEANUP_NODE_USER_USAGE_INTERVAL = config("JOB_CLEANUP_NODE_USER_USAGE_INTERVAL", cast=int, default=3600)
 NODE_USER_USAGE_CLEANUP_BATCH_SIZE = config("NODE_USER_USAGE_CLEANUP_BATCH_SIZE", cast=int, default=50000)
+
+# review job: пороги для диагностического лога [review][on_hold][slow] (секунды)
+SLOW_USER_TOTAL_THRESHOLD = config("SLOW_USER_TOTAL_THRESHOLD", cast=float, default=1.0)
+SLOW_STEP_THRESHOLD = config("SLOW_STEP_THRESHOLD", cast=float, default=0.5)
 
 # Node connection reliability guards
 XRAY_NODE_CONNECT_STALE_TIMEOUT = config("XRAY_NODE_CONNECT_STALE_TIMEOUT", cast=int, default=120)

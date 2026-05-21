@@ -6,26 +6,19 @@ from app.db.models import User
 from distutils.version import LooseVersion
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Path, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.exc import TimeoutError as SATimeoutError, OperationalError
 
-from app.db import Session, crud, get_db
+from app import logger
+from app.db import GetDB, Session, crud, get_db
 from app.dependencies import get_validated_sub, validate_dates
 from app.models.user import SubscriptionUserResponse, UserResponse
 from app.subscription.share import encode_title, generate_subscription
+from app.subscription.bot_settings import resolve_bot_settings
 from app.templates import render_template
 from app.utils.jwt import get_subscription_payload
 from config import (
-    BOT_URL,
-    SUB_CLIENT_NOTE,
-    SUB_DEVICE_LIMIT_ANNOUNCE_TEXT,
-    SUB_EXPIRED_ANNOUNCE_TEXT,
-    SUB_PROFILE_TITLE,
-    SUB_PROFILE_URL,
-    SUB_REVOKED_ANNOUNCE_TEXT,
-    SUB_SUPPORT_URL,
-    SUB_UNSUPPORTED_CLIENT_ANNOUNCE_TEXT,
-    SUB_UPDATE_INTERVAL,
     SUBSCRIPTION_PAGE_TEMPLATE,
     USE_CUSTOM_JSON_DEFAULT,
     USE_CUSTOM_JSON_FOR_HAPP,
@@ -48,9 +41,8 @@ client_config = {
 router = APIRouter(tags=['Subscription'], prefix=f'/{XRAY_SUBSCRIPTION_PATH}')
 
 
-def get_user_note(user: UserResponse) -> str:
+def get_user_note(user: UserResponse, note_template: str) -> str:
     """Return note from SUB_CLIENT_NOTE with <days_left> and <tg_id> placeholders."""
-    note_template = SUB_CLIENT_NOTE
     if not note_template:
         return ""
     if "_" in user.username:
@@ -121,11 +113,54 @@ def get_empty_subscription_user(user: UserResponse) -> UserResponse:
     return user.model_copy(update={"proxies": {}, "inbounds": {}})
 
 
+def _update_user_sub_bg(user_id: int, user_agent: str) -> None:
+    """
+    Фоновый апдейт users.sub_updated_at / sub_last_user_agent.
+    Запускается через FastAPI BackgroundTasks ПОСЛЕ ответа клиенту, чтобы
+    одиночный UPDATE по строке users не блокировал горячий путь /sub/ и
+    не приводил к 500 (1205 Lock wait timeout exceeded), когда параллельно
+    с /sub/ идут массовые UPDATE'ы users из mailing_queue / record_usages /
+    edit_user. Поля sub_updated_at и sub_last_user_agent читаются только
+    админкой панели (telegram/utils/shared.py) для информации, никакая
+    бизнес-логика на их актуальности не строится, поэтому потеря одного
+    апдейта (или задержка ~ms) безопасна.
+    """
+    try:
+        with GetDB() as db:
+            dbuser = db.query(User).filter(User.id == user_id).first()
+            if dbuser is None:
+                return
+            crud.update_user_sub(db, dbuser, user_agent)
+    except (SATimeoutError, OperationalError) as exc:
+        # Lock wait / pool timeout — поле обновит следующий /sub-запрос.
+        logger.warning(
+            "[sub.update_bg] skip user_id=%s due to %s: %s",
+            user_id, type(exc).__name__, exc,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[sub.update_bg] unexpected error user_id=%s: %s: %s",
+            user_id, type(exc).__name__, exc,
+        )
+
+
+def get_routing_header(user_agent: str, settings: dict) -> dict:
+    """Build optional routing header for Happ/v2raytun clients."""
+    routing_value = ""
+    if re.search(r"v2raytun", user_agent or "", re.IGNORECASE):
+        routing_value = str(settings.get("sub_routing_v2raytun") or "").strip()
+    elif re.search(r"\bhapp(?:/|\b)", user_agent or "", re.IGNORECASE):
+        routing_value = str(settings.get("sub_routing_happ") or "").strip()
+
+    return {"routing": routing_value} if routing_value else {}
+
+
 @router.get("/{token}/")
 @router.get("/{token}", include_in_schema=False)
 def user_subscription(
     request: Request,
     token: str,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user_agent: str = Header(default=""),
     x_hwid: str | None = Header(default=None),
@@ -140,6 +175,12 @@ def user_subscription(
     crud.ensure_subscription_token(db, dbuser)
     is_expired = bool(dbuser.expire and dbuser.expire > 0 and dbuser.expire < int(datetime.now(timezone.utc).timestamp()))
     user: UserResponse = UserResponse.model_validate(dbuser)
+    bot_settings = resolve_bot_settings(dbuser)
+    bot_settings = resolve_bot_settings(dbuser)
+
+    html_device_limited = False
+    if not is_revoked and not is_expired and dbuser.device_limit:
+        html_device_limited = crud.count_user_devices(db, dbuser) >= dbuser.device_limit
 
     accept_header = request.headers.get("Accept", "")
     if "text/html" in accept_header:
@@ -147,20 +188,27 @@ def user_subscription(
             return HTMLResponse(
                 render_template(
                     "subscription/revoked.html",
-                    {"bot_url": BOT_URL}
+                    {"bot_url": bot_settings["bot_url"]}
                 )
             )
         if is_expired:
             return HTMLResponse(
                 render_template(
                     "subscription/expired.html",
-                    {"bot_url": BOT_URL}
+                    {"bot_url": bot_settings["bot_url"]}
                 )
             )
+        devices = crud.get_user_active_devices(db, dbuser)
         return HTMLResponse(
             render_template(
                 SUBSCRIPTION_PAGE_TEMPLATE,
-                {"user": user}
+                {
+                    "user": user,
+                    "devices": devices,
+                    "token": token,
+                    "sub_path": XRAY_SUBSCRIPTION_PATH,
+                    "device_limit_reached": html_device_limited,
+                }
             )
         )
 
@@ -177,216 +225,131 @@ def user_subscription(
         user = get_empty_subscription_user(user)
 
     if not is_revoked and not is_expired:
-        crud.update_user_sub(db, dbuser, user_agent)
-    announce_text = get_user_note(user) or ""
-    if is_revoked and SUB_REVOKED_ANNOUNCE_TEXT.strip():
-        announce_text = SUB_REVOKED_ANNOUNCE_TEXT
-    elif is_expired and SUB_EXPIRED_ANNOUNCE_TEXT.strip():
-        announce_text = SUB_EXPIRED_ANNOUNCE_TEXT
-    elif device_limited and SUB_DEVICE_LIMIT_ANNOUNCE_TEXT.strip():
-        announce_text = SUB_DEVICE_LIMIT_ANNOUNCE_TEXT
-    elif unsupported_blocks and SUB_UNSUPPORTED_CLIENT_ANNOUNCE_TEXT.strip():
-        announce_text = SUB_UNSUPPORTED_CLIENT_ANNOUNCE_TEXT
-    support_url = dbuser.sub_support_url or SUB_SUPPORT_URL
-    profile_title = dbuser.sub_profile_title or SUB_PROFILE_TITLE
+        background_tasks.add_task(_update_user_sub_bg, dbuser.id, user_agent)
+
+    announce_text = get_user_note(user, str(bot_settings["sub_client_note"])) or ""
+    if is_revoked and str(bot_settings["sub_revoked_announce_text"]).strip():
+        announce_text = get_user_note(user, bot_settings["sub_revoked_announce_text"])
+    elif is_expired and str(bot_settings["sub_expired_announce_text"]).strip():
+        announce_text = get_user_note(user,bot_settings["sub_expired_announce_text"])
+    elif device_limited and str(bot_settings["sub_device_limit_announce_text"]).strip():
+        announce_text = get_user_note(user, bot_settings["sub_device_limit_announce_text"])
+    elif unsupported_blocks and str(bot_settings["sub_unsupported_client_announce_text"]).strip():
+        announce_text = get_user_note(user, bot_settings["sub_unsupported_client_announce_text"])
+    support_url = bot_settings["sub_support_url"]
+    profile_title = bot_settings["sub_profile_title"]
     response_headers = {
         "content-disposition": build_content_disposition(user.username),
-        "profile-web-page-url": SUB_PROFILE_URL or str(request.url),
+        "profile-web-page-url": bot_settings["sub_profile_url"] or str(request.url),
         "support-url": support_url,
         "profile-title": encode_title(profile_title),
         "announce": encode_title(announce_text),
-        "announce-url": BOT_URL,
-        "profile-update-interval": SUB_UPDATE_INTERVAL,
+        "announce-url": bot_settings["bot_url"],
+        "profile-update-interval": str(bot_settings["sub_update_interval"]),
         "subscription-userinfo": "; ".join(
             f"{key}={val}"
             for key, val in get_subscription_user_info(user).items()
         )
     }
+    response_headers.update(get_routing_header(user_agent, bot_settings))
 
-    if re.match(r'^([Cc]lash-verge|[Cc]lash[-\.]?[Mm]eta|[Ff][Ll][Cc]lash|[Mm]ihomo)', user_agent):
-        conf = generate_subscription(
+    def build_subscription(config_format: str, as_base64: bool, reverse: bool) -> str:
+        return generate_subscription(
             user=user,
-            config_format="clash-meta",
-            as_base64=False,
-            reverse=False,
+            config_format=config_format,
+            as_base64=as_base64,
+            reverse=reverse,
             revoked=is_revoked,
             expired=is_expired,
             device_limited=device_limited,
-            unsupported_client=unsupported_blocks
+            unsupported_client=unsupported_blocks,
+            settings=bot_settings,
         )
+
+    if re.match(r'^([Cc]lash-verge|[Cc]lash[-\.]?[Mm]eta|[Ff][Ll][Cc]lash|[Mm]ihomo)', user_agent):
+        conf = build_subscription("clash-meta", False, False)
         return Response(content=conf, media_type="text/yaml", headers=response_headers)
 
     elif re.match(r'^([Cc]lash|[Ss]tash)', user_agent):
-        conf = generate_subscription(
-            user=user,
-            config_format="clash",
-            as_base64=False,
-            reverse=False,
-            revoked=is_revoked,
-            expired=is_expired,
-            device_limited=device_limited,
-            unsupported_client=unsupported_blocks
-        )
+        conf = build_subscription("clash", False, False)
         return Response(content=conf, media_type="text/yaml", headers=response_headers)
 
     elif re.match(r'^(SFA|SFI|SFM|SFT|[Kk]aring|[Hh]iddify[Nn]ext)', user_agent):
-        conf = generate_subscription(
-            user=user,
-            config_format="sing-box",
-            as_base64=False,
-            reverse=False,
-            revoked=is_revoked,
-            expired=is_expired,
-            device_limited=device_limited,
-            unsupported_client=unsupported_blocks
-        )
+        conf = build_subscription("sing-box", False, False)
         return Response(content=conf, media_type="application/json", headers=response_headers)
 
     elif re.match(r'^(SS|SSR|SSD|SSS|Outline|Shadowsocks|SSconf)', user_agent):
-        conf = generate_subscription(
-            user=user,
-            config_format="outline",
-            as_base64=False,
-            reverse=False,
-            revoked=is_revoked,
-            expired=is_expired,
-            device_limited=device_limited,
-            unsupported_client=unsupported_blocks
-        )
+        conf = build_subscription("outline", False, False)
         return Response(content=conf, media_type="application/json", headers=response_headers)
 
     elif (USE_CUSTOM_JSON_DEFAULT or USE_CUSTOM_JSON_FOR_V2RAYN) and re.match(r'^v2rayN/(\d+\.\d+)', user_agent):
         version_str = re.match(r'^v2rayN/(\d+\.\d+)', user_agent).group(1)
         if LooseVersion(version_str) >= LooseVersion("6.40"):
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray-json",
-                as_base64=False,
-                reverse=False,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited,
-                unsupported_client=unsupported_blocks
-            )
+            conf = build_subscription("v2ray-json", False, False)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray",
-                as_base64=True,
-                reverse=False,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited,
-                unsupported_client=unsupported_blocks
-            )
+            conf = build_subscription("v2ray", True, False)
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
     elif (USE_CUSTOM_JSON_DEFAULT or USE_CUSTOM_JSON_FOR_V2RAYNG) and re.match(r'^v2rayNG/(\d+\.\d+\.\d+)', user_agent):
         version_str = re.match(r'^v2rayNG/(\d+\.\d+\.\d+)', user_agent).group(1)
         if LooseVersion(version_str) >= LooseVersion("1.8.29"):
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray-json",
-                as_base64=False,
-                reverse=False,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited,
-                unsupported_client=unsupported_blocks
-            )
+            conf = build_subscription("v2ray-json", False, False)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         elif LooseVersion(version_str) >= LooseVersion("1.8.18"):
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray-json",
-                as_base64=False,
-                reverse=True,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited,
-                unsupported_client=unsupported_blocks
-            )
+            conf = build_subscription("v2ray-json", False, True)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray",
-                as_base64=True,
-                reverse=False,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited,
-                unsupported_client=unsupported_blocks
-            )
+            conf = build_subscription("v2ray", True, False)
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
     elif re.match(r'^[Ss]treisand', user_agent):
         if USE_CUSTOM_JSON_DEFAULT or USE_CUSTOM_JSON_FOR_STREISAND:
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray-json",
-                as_base64=False,
-                reverse=False,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited,
-                unsupported_client=unsupported_blocks
-            )
+            conf = build_subscription("v2ray-json", False, False)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray",
-                as_base64=True,
-                reverse=False,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited,
-                unsupported_client=unsupported_blocks
-            )
+            conf = build_subscription("v2ray", True, False)
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
     elif (USE_CUSTOM_JSON_DEFAULT or USE_CUSTOM_JSON_FOR_HAPP) and re.match(r'^Happ/(\d+\.\d+\.\d+)', user_agent):
         version_str = re.match(r'^Happ/(\d+\.\d+\.\d+)', user_agent).group(1)
         if LooseVersion(version_str) >= LooseVersion("1.63.1"):
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray-json",
-                as_base64=False,
-                reverse=False,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited,
-                unsupported_client=unsupported_blocks
-            )
+            conf = build_subscription("v2ray-json", False, False)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
-            conf = generate_subscription(
-                user=user,
-                config_format="v2ray",
-                as_base64=True,
-                reverse=False,
-                revoked=is_revoked,
-            expired=is_expired,
-                device_limited=device_limited
-            )
+            conf = build_subscription("v2ray", True, False)
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
 
 
     else:
-        conf = generate_subscription(
-            user=user,
-            config_format="v2ray",
-            as_base64=True,
-            reverse=False,
-            revoked=is_revoked,
-            expired=is_expired,
-            device_limited=device_limited,
-            unsupported_client=unsupported_blocks
-        )
+        conf = build_subscription("v2ray", True, False)
         return Response(content=conf, media_type="text/plain", headers=response_headers)
+
+
+@router.get("/{token}/devices/{device_id}/revoke", include_in_schema=False)
+@router.post("/{token}/devices/{device_id}/revoke", include_in_schema=False)
+def revoke_subscription_device(
+    token: str,
+    device_id: int,
+    db: Session = Depends(get_db),
+):
+    dbuser, is_revoked, _ = resolve_subscription_context(token, db)
+    if not dbuser:
+        return Response(status_code=404)
+
+    is_expired = bool(
+        dbuser.expire and dbuser.expire > 0 and dbuser.expire < int(datetime.now(timezone.utc).timestamp())
+    )
+    if is_revoked or is_expired:
+        raise HTTPException(status_code=403, detail="Subscription is not active")
+
+    dbdevice = crud.get_user_device(db, dbuser, device_id)
+    if not dbdevice or dbdevice.status != "active":
+        raise HTTPException(status_code=404, detail="Active device not found")
+
+    crud.revoke_user_device(db, dbdevice)
+    return RedirectResponse(url=f"/{XRAY_SUBSCRIPTION_PATH}/{token}", status_code=303)
 
 
 @router.get("/{token}/info", response_model=SubscriptionUserResponse)
@@ -470,30 +433,31 @@ def user_subscription_with_client_type(
     if is_revoked or is_expired or device_limited or unsupported_blocks:
         user = get_empty_subscription_user(user)
 
-    announce_text = get_user_note(usтer) or ""
-    if is_revoked and SUB_REVOKED_ANNOUNCE_TEXT.strip():
-        announce_text = SUB_REVOKED_ANNOUNCE_TEXT
-    elif is_expired and SUB_EXPIRED_ANNOUNCE_TEXT.strip():
-        announce_text = SUB_EXPIRED_ANNOUNCE_TEXT
-    elif device_limited and SUB_DEVICE_LIMIT_ANNOUNCE_TEXT.strip():
-        announce_text = SUB_DEVICE_LIMIT_ANNOUNCE_TEXT
-    elif unsupported_blocks and SUB_UNSUPPORTED_CLIENT_ANNOUNCE_TEXT.strip():
-        announce_text = SUB_UNSUPPORTED_CLIENT_ANNOUNCE_TEXT
-    support_url = dbuser.sub_support_url or SUB_SUPPORT_URL
-    profile_title = dbuser.sub_profile_title or SUB_PROFILE_TITLE
+    announce_text = get_user_note(user, str(bot_settings["sub_client_note"])) or ""
+    if is_revoked and str(bot_settings["sub_revoked_announce_text"]).strip():
+        announce_text = get_user_note(user, bot_settings["sub_revoked_announce_text"])
+    elif is_expired and str(bot_settings["sub_expired_announce_text"]).strip():
+        announce_text = get_user_note(user,bot_settings["sub_expired_announce_text"])
+    elif device_limited and str(bot_settings["sub_device_limit_announce_text"]).strip():
+        announce_text = get_user_note(user, bot_settings["sub_device_limit_announce_text"])
+    elif unsupported_blocks and str(bot_settings["sub_unsupported_client_announce_text"]).strip():
+        announce_text = get_user_note(user, bot_settings["sub_unsupported_client_announce_text"])
+    support_url = bot_settings["sub_support_url"]
+    profile_title = bot_settings["sub_profile_title"]
     response_headers = {
         "content-disposition": build_content_disposition(user.username),
-        "profile-web-page-url": SUB_PROFILE_URL or str(request.url),
+        "profile-web-page-url": bot_settings["sub_profile_url"] or str(request.url),
         "support-url": support_url,
         "profile-title": encode_title(profile_title),
         "announce": encode_title(announce_text),
-        "announce-url": BOT_URL,
-        "profile-update-interval": SUB_UPDATE_INTERVAL,
+        "announce-url": bot_settings["bot_url"],
+        "profile-update-interval": str(bot_settings["sub_update_interval"]),
         "subscription-userinfo": "; ".join(
             f"{key}={val}"
             for key, val in get_subscription_user_info(user).items()
         )
     }
+    response_headers.update(get_routing_header(user_agent, bot_settings))
     config = client_config.get(client_type)
     conf = generate_subscription(user=user,
                                  config_format=config["config_format"],
@@ -502,6 +466,7 @@ def user_subscription_with_client_type(
                                  revoked=is_revoked,
                                  expired=is_expired,
                                  device_limited=device_limited,
-                                 unsupported_client=unsupported_blocks)
+                                 unsupported_client=unsupported_blocks,
+                                 settings=bot_settings)
 
     return Response(content=conf, media_type=config["media_type"], headers=response_headers)

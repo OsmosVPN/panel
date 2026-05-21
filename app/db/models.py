@@ -22,7 +22,7 @@ from sqlalchemy.sql.expression import select, text
 
 from app import xray
 from app.db.base import Base
-from app.models.node import NodeStatus
+from app.models.node import NodeProtocol, NodeStatus
 from app.models.proxy import (
     ProxyHostALPN,
     ProxyHostFingerprint,
@@ -58,6 +58,31 @@ class AdminUsageLogs(Base):
     reset_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Bot(Base):
+    __tablename__ = "bots"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(64), unique=True, index=True, nullable=False)
+    title = Column(String(128), nullable=True, default=None)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    users = relationship("User", back_populates="bot")
+    settings = relationship("BotSettings", uselist=False, back_populates="bot", cascade="all, delete-orphan")
+
+
+class BotSettings(Base):
+    __tablename__ = "bot_settings"
+
+    id = Column(Integer, primary_key=True)
+    bot_id = Column(Integer, ForeignKey("bots.id", ondelete="CASCADE"), unique=True, nullable=False)
+    data = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    bot = relationship("Bot", back_populates="settings")
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -82,10 +107,10 @@ class User(Base):
     sub_updated_at = Column(DateTime, nullable=True, default=None)
     sub_last_user_agent = Column(String(512), nullable=True, default=None)
     subscription_token = Column(String(256), nullable=True, default=None)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=True, index=True)
+    bot = relationship("Bot", back_populates="users")
     created_at = Column(DateTime, default=datetime.utcnow)
     note = Column(String(500), nullable=True, default=None)
-    sub_support_url = Column(String(1024), nullable=True, default=None)
-    sub_profile_title = Column(String(256), nullable=True, default=None)
     online_at = Column(DateTime, nullable=True, default=None)
     on_hold_expire_duration = Column(BigInteger, nullable=True, default=None)
     on_hold_timeout = Column(DateTime, nullable=True, default=None)
@@ -148,6 +173,10 @@ class User(Base):
                     _[proxy.type].append(inbound["tag"])
 
         return _
+
+    @property
+    def bot_username(self):
+        return self.bot.username if self.bot else None
 
 
 class UserDevice(Base):
@@ -326,6 +355,12 @@ class Node(Base):
     address = Column(String(256), unique=False, nullable=False)
     port = Column(Integer, unique=False, nullable=False)
     api_port = Column(Integer, unique=False, nullable=False)
+    protocol = Column(
+        Enum(NodeProtocol),
+        nullable=False,
+        default=NodeProtocol.rest,
+        server_default=NodeProtocol.rest.value,
+    )
     xray_version = Column(String(32), nullable=True)
     status = Column(Enum(NodeStatus), nullable=False, default=NodeStatus.connecting)
     last_status_change = Column(DateTime, default=datetime.utcnow)

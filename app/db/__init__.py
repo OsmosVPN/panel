@@ -1,7 +1,11 @@
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SATimeoutError
 from sqlalchemy.orm import Session
 
 from .base import Base, SessionLocal, engine  # noqa
+from app import logger
+from app.utils.db_metrics import db_checkout_slow_total, db_checkout_timeout_total
+from app.utils.request_context import request_id_var, request_handler_var
+import time
 
 
 class GetDB:  # Context Manager
@@ -9,6 +13,25 @@ class GetDB:  # Context Manager
         self.db = SessionLocal()
 
     def __enter__(self):
+        # Measure pool/connection checkout latency (helps detect DB stalls/locks/pool starvation)
+        _t0 = time.monotonic()
+        try:
+            # Force a real connection checkout early, so we can attribute wait time
+            self.db.connection()
+        except SATimeoutError:
+            db_checkout_timeout_total.inc()
+            raise
+        finally:
+            waited_ms = int((time.monotonic() - _t0) * 1000)
+            # Log only if notable; threshold can be tuned via env later if needed
+            if waited_ms >= 200:
+                db_checkout_slow_total.inc()
+                logger.warning(
+                    "[db.checkout.slow] rid=%s handler=%s waited_ms=%d",
+                    request_id_var.get() or "-",
+                    request_handler_var.get() or "-",
+                    waited_ms,
+                )
         # Apply per-session settings to reduce lock contention and long waits
         try:
             # Shorten lock wait to fail fast instead of hanging indefinitely
